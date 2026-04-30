@@ -4,6 +4,12 @@
  */
 import { evaluate, evaluateAsync, getClient } from '../connection.js';
 
+export async function cleanupWatchlistSearch(clientFactory = getClient) {
+  const c = await clientFactory();
+  await c.Input.dispatchKeyEvent({ type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  await c.Input.dispatchKeyEvent({ type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+}
+
 export async function get() {
   // Try internal API first — reads from the active watchlist widget
   const symbols = await evaluate(`

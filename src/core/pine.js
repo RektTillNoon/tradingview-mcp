@@ -78,6 +78,14 @@ export async function ensurePineEditorOpen() {
 export function analyze({ source }) {
   const lines = source.split('\n');
   const diagnostics = [];
+  const hasStrategyDecl = lines.some(line => line.trim().startsWith('strategy('));
+  const hasStrategyEntry = source.includes('strategy.entry');
+  const hasStrategyExit = /strategy\.(exit|close|close_all)\s*\(/.test(source);
+  const hasAlert = /alert(condition)?\s*\(/.test(source);
+
+  function addDiagnostic({ line, column = 1, code, message, severity }) {
+    diagnostics.push({ line, column, code, message, severity });
+  }
 
   let isV6 = false;
   for (const line of lines) {
@@ -118,8 +126,9 @@ export function analyze({ source }) {
       const info = arrays.get(arrName);
       if (!info || info.size === null) continue;
       if (idx < 0 || idx >= info.size) {
-        diagnostics.push({
+        addDiagnostic({
           line: i + 1, column: match.index + 1,
+          code: 'ARRAY_INDEX_OUT_OF_BOUNDS',
           message: `array.${method}(${arrName}, ${idx}) — index ${idx} out of bounds (array size is ${info.size})`,
           severity: 'error',
         });
@@ -136,8 +145,9 @@ export function analyze({ source }) {
       if (arrName === 'array') continue;
       const info = arrays.get(arrName);
       if (info && info.size === 0) {
-        diagnostics.push({
+        addDiagnostic({
           line: i + 1, column: match.index + 1,
+          code: 'EMPTY_ARRAY_FIRST_LAST',
           message: `${arrName}.${match[2]}() called on possibly empty array (declared with size 0)`,
           severity: 'warning',
         });
@@ -149,13 +159,10 @@ export function analyze({ source }) {
     const line = lines[i];
     const trimmed = line.trim();
     if (trimmed.includes('strategy.entry') || trimmed.includes('strategy.close')) {
-      let hasStrategyDecl = false;
-      for (const l of lines) {
-        if (l.trim().startsWith('strategy(')) { hasStrategyDecl = true; break; }
-      }
       if (!hasStrategyDecl) {
-        diagnostics.push({
+        addDiagnostic({
           line: i + 1, column: 1,
+          code: 'STRATEGY_CALL_WITHOUT_STRATEGY_DECLARATION',
           message: 'strategy.entry/close used but no strategy() declaration found — did you mean to use indicator()?',
           severity: 'error',
         });
@@ -167,12 +174,59 @@ export function analyze({ source }) {
   if (!isV6 && source.includes('//@version=')) {
     const vMatch = source.match(/\/\/@version=(\d+)/);
     if (vMatch && parseInt(vMatch[1]) < 5) {
-      diagnostics.push({
+      addDiagnostic({
         line: 1, column: 1,
+        code: 'OLD_PINE_VERSION',
         message: `Script uses Pine v${vMatch[1]} — consider upgrading to v6 for latest features`,
         severity: 'info',
       });
     }
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/request\.security\s*\(/.test(line) && /lookahead\s*=\s*barmerge\.lookahead_on/.test(line)) {
+      addDiagnostic({
+        line: i + 1,
+        code: 'REPAINT_LOOKAHEAD_ON',
+        message: 'request.security uses barmerge.lookahead_on, which can repaint future values into history.',
+        severity: 'warning',
+      });
+    }
+  }
+
+  if (hasStrategyDecl && hasStrategyEntry && !hasStrategyExit) {
+    const entryLine = lines.findIndex(line => line.includes('strategy.entry'));
+    addDiagnostic({
+      line: entryLine >= 0 ? entryLine + 1 : 1,
+      code: 'STRATEGY_WITHOUT_EXIT',
+      message: 'Strategy enters positions but does not define strategy.exit/close/close_all.',
+      severity: 'warning',
+    });
+  }
+
+  if (hasStrategyDecl && hasStrategyEntry && !hasAlert) {
+    const entryLine = lines.findIndex(line => line.includes('strategy.entry'));
+    addDiagnostic({
+      line: entryLine >= 0 ? entryLine + 1 : 1,
+      code: 'ENTRY_WITHOUT_ALERT',
+      message: 'Strategy entries are present without alert()/alertcondition(); live alerts may diverge from backtest intent.',
+      severity: 'info',
+    });
+  }
+
+  const drawingLimitMatch = source.match(/max_(lines|labels|boxes)_count\s*=\s*(\d+)/g) || [];
+  const highDrawingLimits = drawingLimitMatch.some(match => Number(match.match(/(\d+)/)?.[1] || 0) >= 500);
+  const tableSizeMatch = source.match(/table\.new\s*\([^)]*,\s*(\d+)\s*,\s*(\d+)/);
+  const largeTable = tableSizeMatch ? Number(tableSizeMatch[1]) * Number(tableSizeMatch[2]) >= 300 : false;
+  if (highDrawingLimits || largeTable) {
+    const drawLine = lines.findIndex(line => /max_(lines|labels|boxes)_count|table\.new/.test(line));
+    addDiagnostic({
+      line: drawLine >= 0 ? drawLine + 1 : 1,
+      code: 'EXCESSIVE_DRAWING_LIMITS',
+      message: 'Script requests high drawing/table limits; this can slow chart rendering and bloat agent context.',
+      severity: 'info',
+    });
   }
 
   return {

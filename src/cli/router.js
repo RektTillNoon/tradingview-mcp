@@ -3,12 +3,52 @@
  * Zero dependencies — uses only Node.js built-ins.
  */
 import { parseArgs } from 'node:util';
+import { blockedMutation, getSafetyMode, plannedMutation } from '../core/safety.js';
 
 /** @type {Map<string, { description: string, options?: object, handler: Function, subcommands?: Map<string, object> }>} */
 const commands = new Map();
 
+const mutatingCommands = new Set(['launch']);
+const mutatingSubcommands = new Map([
+  ['pine', new Set(['set', 'compile', 'raw-compile', 'save', 'new', 'open'])],
+  ['draw', new Set(['shape', 'remove', 'clear'])],
+  ['alert', new Set(['create', 'delete'])],
+  ['watchlist', new Set(['add'])],
+  ['indicator', new Set(['add', 'remove', 'toggle', 'set'])],
+  ['layout', new Set(['switch'])],
+  ['pane', new Set(['layout', 'focus', 'symbol'])],
+  ['tab', new Set(['new', 'close', 'switch'])],
+  ['replay', new Set(['start', 'step', 'stop', 'autoplay', 'trade'])],
+  ['ui', new Set(['click', 'keyboard', 'hover', 'scroll', 'eval', 'type', 'panel', 'fullscreen', 'mouse'])],
+  ['data', new Set([])],
+]);
+
 export function register(name, config) {
   commands.set(name, config);
+}
+
+function isMutatingCommand(cmdName, subName, values = {}, positionals = []) {
+  if (subName) return mutatingSubcommands.get(cmdName)?.has(subName) || false;
+  if (['symbol', 'timeframe', 'type', 'scroll'].includes(cmdName)) return positionals.length > 0;
+  if (cmdName === 'range') return Boolean(values.from && values.to);
+  return mutatingCommands.has(cmdName);
+}
+
+function guardCliMutation(cmdName, subName, values, positionals) {
+  if (!isMutatingCommand(cmdName, subName, values, positionals)) return false;
+  const mode = getSafetyMode();
+  const tool = subName ? `${cmdName} ${subName}` : cmdName;
+  const args = { values, positionals };
+
+  if (mode === 'read_only') {
+    console.error(JSON.stringify(blockedMutation({ mode, tool, args }), null, 2));
+    process.exit(1);
+  }
+  if (mode === 'confirm_mutations') {
+    console.log(JSON.stringify(plannedMutation({ mode, tool, args }), null, 2));
+    process.exit(0);
+  }
+  return false;
 }
 
 function printHelp() {
@@ -103,6 +143,7 @@ export async function run(argv) {
         }
         process.exit(0);
       }
+      guardCliMutation(cmdName, subName, values, positionals);
       await execute(handler, values, positionals);
     } catch (err) {
       handleError(err);
@@ -121,6 +162,7 @@ export async function run(argv) {
         printCommandHelp(cmdName, cmd);
         process.exit(0);
       }
+      guardCliMutation(cmdName, null, values, positionals);
       await execute(handler, values, positionals);
     } catch (err) {
       handleError(err);

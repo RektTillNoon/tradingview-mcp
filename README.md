@@ -154,6 +154,9 @@ tv quote                           # current price
 tv symbol AAPL                     # change symbol
 tv ohlcv --summary                 # price summary
 tv screenshot -r chart             # capture chart
+tv snapshot --screenshot           # coherent agent-ready chart snapshot
+tv scorecard                       # strategy robustness scorecard
+tv alert-payload --strategy-id my-strategy --symbol ES1! --timeframe 5 --side long --action entry
 tv pine compile                    # compile Pine Script
 tv pane layout 2x2                 # 4-chart grid
 tv pane symbol 1 ES1!              # set pane symbol
@@ -165,6 +168,7 @@ tv stream quote | jq '.close'      # monitor price changes
 ```
 tv status / launch / state / symbol / timeframe / type / info / search
 tv quote / ohlcv / values
+tv capabilities / snapshot / scorecard / alert-payload
 tv data lines/labels/tables/boxes/strategy/trades/equity/depth/indicator
 tv pine get/set/compile/analyze/check/save/new/open/list/errors/console
 tv draw shape/list/get/remove/clear
@@ -207,7 +211,9 @@ Claude reads [`CLAUDE.md`](CLAUDE.md) automatically when working in this project
 | "What's on my chart?" | `chart_get_state` → `data_get_study_values` → `quote_get` |
 | "What levels are showing?" | `data_get_pine_lines` → `data_get_pine_labels` |
 | "Read the session table" | `data_get_pine_tables` with `study_filter` |
-| "Give me a full analysis" | `quote_get` → `data_get_study_values` → `data_get_pine_lines` → `data_get_pine_labels` → `data_get_pine_tables` → `data_get_ohlcv` (summary) → `capture_screenshot` |
+| "Give me a full analysis" | `chart_snapshot` with `include_screenshot: true` |
+| "Is this strategy robust?" | `strategy_scorecard` |
+| "Make a webhook alert payload" | `alert_webhook_payload` |
 | "Switch to AAPL daily" | `chart_set_symbol` → `chart_set_timeframe` |
 | "Write a Pine Script for..." | `pine_set_source` → `pine_smart_compile` → `pine_get_errors` |
 | "Start replay at March 1st" | `replay_start` → `replay_step` → `replay_trade` |
@@ -215,7 +221,16 @@ Claude reads [`CLAUDE.md`](CLAUDE.md) automatically when working in this project
 | "Draw a level at 24500" | `draw_shape` (horizontal_line) |
 | "Take a screenshot" | `capture_screenshot` |
 
-## Tool Reference (78 MCP tools)
+## Tool Reference (82 MCP tools)
+
+### Workflow Tools
+
+| Tool | When to use | Output size |
+|------|-------------|-------------|
+| `tv_capabilities` | Check which TradingView internals are available and which tool groups are degraded | ~1-3KB |
+| `chart_snapshot` | Capture one timestamped state for chart analysis | ~2-12KB depending on options |
+| `strategy_scorecard` | Convert Strategy Tester output into robustness score, risks, and recommendation | ~1-3KB |
+| `alert_webhook_payload` | Build stable JSON for TradingView alert webhooks | ~500B |
 
 ### Chart Reading
 
@@ -281,7 +296,7 @@ Read `line.new()`, `label.new()`, `table.new()`, `box.new()` output from any vis
 | `pine_get_source` | Read current script (**warning: can be 200KB+ for complex scripts**) |
 | `pine_new` | Create blank indicator/strategy/library |
 | `pine_open` / `pine_list_scripts` | Open or list saved scripts |
-| `pine_analyze` | Offline static analysis (no chart needed) |
+| `pine_analyze` | Offline static analysis for array bounds, repaint risk, missing exits, alert mismatch, and drawing bloat |
 | `pine_check` | Server-side compile check (no chart needed) |
 
 ### Replay Mode
@@ -308,6 +323,24 @@ Read `line.new()`, `label.new()`, `table.new()`, `box.new()` output from any vis
 | `layout_list` / `layout_switch` | Manage saved layouts |
 | `ui_open_panel` / `ui_click` / `ui_evaluate` | UI automation |
 | `tv_launch` / `tv_health_check` / `tv_discover` | Connection management |
+
+## Safety Modes
+
+Set `TV_MCP_MODE` to control mutating chart/UI tools:
+
+| Mode | Behavior |
+|------|----------|
+| `full_control` | Default. Mutating tools execute normally. |
+| `read_only` | Mutating tools return `{ blocked: true, mode, tool }` before touching TradingView. |
+| `confirm_mutations` | Mutating tools return a planned action and do not execute. Re-run with `full_control` to apply. |
+
+Read-only tools, resources, prompts, `chart_snapshot`, `strategy_scorecard`, and `alert_webhook_payload` remain available in every mode.
+
+## MCP Resources and Prompts
+
+The server exposes resources for `tradingview://chart/current-snapshot`, `tradingview://bridge/capabilities`, `tradingview://pine/current-metadata`, and `tradingview://strategy/latest-scorecard`.
+
+Prompts are available for chart analysis, Pine debugging, strategy robustness review, and alert webhook preparation.
 
 ## Context Management
 
@@ -339,11 +372,14 @@ The key flag: `--remote-debugging-port=9222`
 ## Testing
 
 ```bash
-# Requires TradingView running with --remote-debugging-port=9222
+# Offline unit lane
+npm run test:unit
+
+# Live E2E lane, requires TradingView running with --remote-debugging-port=9222
 npm test
 ```
 
-29 tests covering: Pine Script static analysis, server-side compilation, and CLI routing.
+Tests cover Pine Script static analysis, workflow helpers, MCP registration/resources/prompts, safety modes, and CLI routing. Pine facade compile checks are opt-in with `TV_MCP_RUN_PINE_CHECK_TESTS=1`.
 
 ## Architecture
 
@@ -351,8 +387,9 @@ npm test
 Claude Code  ←→  MCP Server (stdio)  ←→  CDP (port 9222)  ←→  TradingView Desktop (Electron)
 ```
 
-- **Transport**: MCP over stdio (78 tools) + CLI (`tv` command, 30 commands with 66 subcommands)
+- **Transport**: MCP over stdio (82 tools) + CLI (`tv` command, workflow commands, and grouped subcommands)
 - **Connection**: Chrome DevTools Protocol on localhost:9222
+- **MCP API**: Current `registerTool`/`registerResource`/`registerPrompt` registration style
 - **Streaming**: Poll-and-diff loop with deduplication, JSONL output to stdout
 - **No dependencies** beyond `@modelcontextprotocol/sdk` and `chrome-remote-interface`
 

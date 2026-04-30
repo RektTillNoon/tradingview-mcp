@@ -42,6 +42,8 @@ describe('CLI — help and routing', () => {
     assert.ok(stdout.includes('status'));
     assert.ok(stdout.includes('pine'));
     assert.ok(stdout.includes('quote'));
+    assert.ok(stdout.includes('capabilities'));
+    assert.ok(stdout.includes('alert-payload'));
   });
 
   it('-h is same as --help', () => {
@@ -77,6 +79,47 @@ describe('CLI — help and routing', () => {
     assert.equal(exitCode, 0);
     assert.ok(stdout.includes('--count'));
     assert.ok(stdout.includes('--summary'));
+  });
+
+  it('alert-payload builds execution-safe JSON without TradingView', () => {
+    const { stdout, exitCode } = run([
+      'alert-payload',
+      '--strategy-id', 'confirmed-breakout-v1',
+      '--symbol', 'BINANCE:BTCUSDT',
+      '--timeframe', '15',
+      '--side', 'long',
+      '--action', 'entry',
+      '--price', '64250.5',
+      '--stop', '63500',
+      '--target', '65750',
+    ]);
+    assert.equal(exitCode, 0);
+    const result = JSON.parse(stdout);
+    assert.equal(result.schema, 'tradingview-mcp.alert.v1');
+    assert.equal(result.strategy_id, 'confirmed-breakout-v1');
+    assert.equal(result.risk.stop, 63500);
+  });
+
+  it('read-only safety mode blocks mutating CLI commands before connecting', () => {
+    const { stderr, exitCode } = run(['symbol', 'AAPL'], {
+      env: { ...process.env, TV_MCP_MODE: 'read_only' },
+    });
+    assert.equal(exitCode, 1);
+    const result = JSON.parse(stderr);
+    assert.equal(result.blocked, true);
+    assert.equal(result.mode, 'read_only');
+    assert.equal(result.tool, 'symbol');
+  });
+
+  it('read-only safety mode blocks raw Pine compile before connecting', () => {
+    const { stderr, exitCode } = run(['pine', 'raw-compile'], {
+      env: { ...process.env, TV_MCP_MODE: 'read_only' },
+    });
+    assert.equal(exitCode, 1);
+    const result = JSON.parse(stderr);
+    assert.equal(result.blocked, true);
+    assert.equal(result.mode, 'read_only');
+    assert.equal(result.tool, 'pine raw-compile');
   });
 });
 
@@ -129,7 +172,9 @@ describe('CLI — pine analyze (offline)', () => {
   });
 });
 
-describe('CLI — pine check (server compile)', () => {
+const runPineCheckTests = process.env.TV_MCP_RUN_PINE_CHECK_TESTS === '1';
+
+describe('CLI — pine check (server compile)', { skip: runPineCheckTests ? false : 'Set TV_MCP_RUN_PINE_CHECK_TESTS=1 to run network compile checks.' }, () => {
   it('compiles valid Pine Script', () => {
     const source = '//@version=6\nindicator("test")\nplot(close)';
     const { stdout, exitCode } = run(['pine', 'check'], { input: source });
